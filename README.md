@@ -94,3 +94,7 @@ As documented in the [subMIT User's Guide](https://submit.mit.edu/submit-users-g
 > *Exercise*: Add a file in your `public_html` directory and navigate to it in your browser.
 
 You can add your own .php files to your `public_html` directory to edit the style of your webpage.
+
+## Mathematica
+
+Mathematica is a software we use to perform all sorts of symbolic calucations. MIT has a license for sudents, just follow the instructions [here](https://ist.mit.edu/wolfram/mathematica). Download the software to your laptop not subMIT. It is usually nicer to avoid running Mathematica remotely.
