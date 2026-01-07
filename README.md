@@ -98,3 +98,13 @@ You can add your own .php files to your `public_html` directory to edit the styl
 ## Mathematica
 
 Mathematica is a software we use to perform all sorts of symbolic calucations. Mathematica can be run online after activating your MIT license. You can find instructions [here](https://ist.mit.edu/wolfram/mathematica-online). If you prefer to use Mathematica offline and on your laptop, follow [these instructions](https://ist.mit.edu/wolfram/mathematica).
+
+## Environment
+In order to be able to run our scripts, we need to install different packages. We will do this using conda. All you need to do is execute this command while you are in this repository:
+```
+conda env create -f environment.yml
+```
+You have to activate the environment everytime you log into submit using
+```
+conda activate sweights-py312
+```
