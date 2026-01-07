@@ -100,7 +100,15 @@ You can add your own .php files to your `public_html` directory to edit the styl
 Mathematica is a software we use to perform all sorts of symbolic calucations. Mathematica can be run online after activating your MIT license. You can find instructions [here](https://ist.mit.edu/wolfram/mathematica-online). If you prefer to use Mathematica offline and on your laptop, follow [these instructions](https://ist.mit.edu/wolfram/mathematica).
 
 ## Environment
-In order to be able to run our scripts, we need to install different packages. We will do this using conda. All you need to do is execute this command while you are in this repository:
+In order to be able to run our scripts, we need to install different packages. We will do this using conda.
+Install conda using these commands from your home directory `cd ~`:
+```
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash Miniforge3-Linux-x86_64.sh
+```
+Just follow the instructions that appear on the screen while downloading.
+
+Then go into this repository and run:
 ```
 conda env create -f environment.yml
 ```
