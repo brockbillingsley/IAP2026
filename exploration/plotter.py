@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import uproot
 
 parser = argparse.ArgumentParser(description="Plot histograms from ROOT file.")
-parser.add_argument("--data", type=str, help="Path to the input ROOT file.")
+parser.add_argument("--data", type=str, required=True, help="Path to the input ROOT file.")
 args = parser.parse_args()
 
 # Open the ROOT file
@@ -11,23 +11,14 @@ with uproot.open(args.data) as file:
     data = file["B02KstMuMu_Run1_centralQ2E_sig"].arrays(library="pd")
 
 # ----- Task 1: Data Inspection -----
-print("\nFor task 1, please also see the write-up in task1.md")
-
-    print("\n=== TASK 1: BASIC INSPECTION ===")
-    print("Rows:", len(data))
-    print("Columns:", len(data.columns))
-
-    print("\nColumn names:")
-    print(list(data.columns))
-
-    print("\nFirst 5 rows:")
-    print(data.head())
-
-    print("\nDtypes:")
-    print(data.dtypes)
-
-    print("\nSummary stats:")
-    print(data.describe())
+print("\n--- TASK 1: BASIC INSPECTION ---")
+print("Rows:", len(data))
+print("Columns:", len(data.columns))
+print("\nColumn names:", list(data.columns))
+print("\nFirst 5 rows:\n", data.head())
+print("\nDtypes:\n", data.dtypes)
+print("\nSummary stats:\n", data.describe())
+print(data.describe())
 
 import os
 import numpy as np
@@ -97,6 +88,60 @@ print("\nYes, each plot contains all necessary elements.")
 
 # ----- Task 4: Interpret the differences between distributions (a-e) -----
 print("\nTask 4 write-up contained in task4.md.")
+
+# ----- Task 5: 2D histograms -----
+import os
+import numpy as np
+
+os.makedirs("plots", exist_ok=True)
+
+# 1/11 million sampled to speed up
+DO_SAMPLE = True
+N_SAMPLE = 1_000_000
+
+df2d = data
+if DO_SAMPLE and len(data) > N_SAMPLE:
+    df2d = data.sample(n=N_SAMPLE, random_state=0)
+
+# 5.1) 2D histogram: cosThetaK vs cosThetaL
+x = df2d["cosThetaK"].to_numpy()
+y = df2d["cosThetaL"].to_numpy()
+
+plt.figure(figsize=(7, 6))
+plt.hist2d(
+    x, y,
+    bins=80,
+    range=[[-1, 1], [-1, 1]],
+    density=True
+)
+plt.colorbar(label="Normalized density")
+plt.xlabel("cosThetaK (dimensionless)")
+plt.ylabel("cosThetaL (dimensionless)")
+plt.title("2D histogram: cosThetaK vs cosThetaL")
+plt.tight_layout()
+plt.savefig("plots/cosThetaK_vs_cosThetaL_2D.png", dpi=200)
+plt.close()
+
+# 5.2) 2D histogram: mKpi vs q2
+x = df2d["mKpi"].to_numpy()
+y = df2d["q2"].to_numpy()
+
+plt.figure(figsize=(7, 6))
+plt.hist2d(
+    x, y,
+    bins=[80, 80],
+    range=[[0.6, 1.8], [0, 12.5]],
+    density=True
+)
+plt.colorbar(label="Normalized density")
+plt.xlabel("mKpi (GeV)")
+plt.ylabel("q2 (GeV$^2$)")
+plt.title("2D histogram: mKpi vs q2")
+plt.tight_layout()
+plt.savefig("plots/mKpi_vs_q2_2D.png", dpi=200)
+plt.close()
+
+print("Task 5 done: wrote 2D histograms to plots/")
 
 # Task 1) Inspect the data and identify the different variables. What are their units?
 # Task 2) Create one plot per variable with five different distributions:
