@@ -17,4 +17,5 @@ dependencies:
   - pip:
       - particle
       - snakemake
+      - tables
       - uncertainties
