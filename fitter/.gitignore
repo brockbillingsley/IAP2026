@@ -1,0 +1,10 @@
+# Logs
+fitter.log
+
+# Big generated outputs (do NOT commit)
+plots/
+sweights/
+
+# Python cache
+__pycache__/
+*.pyc
