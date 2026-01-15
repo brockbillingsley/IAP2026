@@ -8,3 +8,5 @@ sweights/
 # Python cache
 __pycache__/
 *.pyc
+
+plots_compare/
