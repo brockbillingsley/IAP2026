@@ -1,0 +1,6 @@
+# Efficiency
+The `efficiency.py` file in this repository contains a function defining an efficiency function which reflects some experimental effects of the LHCb detector.
+## Tasks
+1.  Write code that generates a sample representing the efficiency shape using Monte Carlo integration. You do this by generating random uniformly distributed numbers (start with 10 million) for each variable within the ranges appearing in the figures you made in the exploration folder. This gives you 10 million 4-dimensional data points. For each data point, calculate the efficiency. Then generate a fifth uniformly distributed variable in the range between 0 and the maximum efficiency in your sample. Keep all data points for which this fifth random variable is lower than the actual efficiency value.
+2.  Visualize the efficiency by plotting the one-dimensional projection of each variable as well as the two-dimensional projections.
+3.  Try to relate the shapes you are seeing to the terms in the efficiency function. Can you think of the reason why the efficiency at LHCb has some of these features?
