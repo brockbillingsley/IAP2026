@@ -10,3 +10,4 @@ __pycache__/
 *.pyc
 
 plots_compare/
+scripts/task5_compare*
