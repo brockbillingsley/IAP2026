@@ -1,0 +1,9 @@
+{
+    "parameters": {
+        "lambda_bmass": -0.2,
+        "a2_cosh": -0.2,
+        "a1_cosh": 0.0,
+        "a2_cosl": -0.4,
+        "a1_cosl": 0.0
+    }
+}
