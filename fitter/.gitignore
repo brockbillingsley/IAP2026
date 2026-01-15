@@ -11,3 +11,8 @@ __pycache__/
 
 plots_compare/
 scripts/task5_compare*
+
+plots_compare_paperstyle/
+plots_compare_paperstyle_v2/
+scripts/task5_paperstyle.py
+scripts/task5_paperstyle_v2.py
