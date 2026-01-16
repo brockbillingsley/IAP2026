@@ -1,1 +1,7 @@
 *.root
+
+# Local scratch / logs
+bgfit.log
+
+# Local scripts not meant for commit
+fitter/scripts/task5_supervisor_style.py
