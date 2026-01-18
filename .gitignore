@@ -5,3 +5,6 @@ bgfit.log
 
 # Local scripts not meant for commit
 fitter/scripts/task5_supervisor_style.py
+run_task5.log
+
+run_task5.log
