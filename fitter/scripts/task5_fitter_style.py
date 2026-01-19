@@ -218,6 +218,7 @@ for vkey, l, u in [
         comp_w = Hcomp.values()
 
         print("DEBUG", vkey, rkey,
+
             "Nref(after cuts)=", len(xref),
             "sum_ref_counts=", float(np.sum(ref_counts)),
             "sumw(comp)=", float(np.sum(comp_w)))

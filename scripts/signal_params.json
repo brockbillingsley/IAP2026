@@ -1,0 +1,11 @@
+{
+  "parameters": {
+    "mu": 5.279,
+    "sigmal": 0.020,
+    "alphal": 1.5,
+    "nl": 3.0,
+    "sigmar": 0.020,
+    "alphar": 1.5,
+    "nr": 3.0
+  }
+}
