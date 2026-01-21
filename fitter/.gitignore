@@ -1,21 +1,17 @@
 # Logs
 fitter.log
 
-# Big generated outputs (do NOT commit)
+# Big generated outputs
 plots/
 sweights/
 
 # Python cache
+__pychache__/
+*.pycfitter/scripts/task5_paperstyle.py
+fitter/scripts/task5_paperstyle.py
+
+# Ignore local python cache + local style scratch
 __pycache__/
 *.pyc
-
-plots_compare/
-scripts/task5_compare*
-
-plots_compare_paperstyle/
-plots_compare_paperstyle_v2/
-scripts/task5_paperstyle.py
-scripts/task5_paperstyle_v2.py
-plots_compare_paper_exact/
-scripts/task5_paper_exact.py
-plots_compare_supervisor_style/
+fitter/__pycache__/
+fitter/scripts/task5_paperstyle.py

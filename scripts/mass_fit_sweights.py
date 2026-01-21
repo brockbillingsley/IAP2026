@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import zfit
+znp = zfit.z.numpy
 
 # Try core zfit first; otherwise use zfit_physics
 try:
@@ -14,13 +15,15 @@ except AttributeError:
 from hepstats.splot import compute_sweights
 
 def fit_shape_unbinned(pdf, mass_array, obs, label="shape"):
-    data = zfit.Data.from_numpy(obs=obs, array=mass_array)
+    data = zfit.Data.from_numpy(obs=obs, array=np.asarray(mass_array, dtype=np.float64))
     loss = zfit.loss.UnbinnedNLL(model=pdf, data=data)
     minimizer = zfit.minimize.Minuit()
     result = minimizer.minimize(loss)
     result.hesse()
     print(f"{label} fit: converged={result.converged} valid={getattr(result, 'valid', None)}")
+    print(result)
     return result
+
 
 # -----------------------------
 # 1) Model building
@@ -67,7 +70,7 @@ def build_mass_model(B_mass_obs, n_total_guess):
 # 2) Fit
 # -----------------------------
 def fit_mass(model, mass_array, B_mass_obs):
-    data = zfit.Data.from_numpy(obs=B_mass_obs, array=mass_array)
+    data = zfit.Data.from_numpy(obs=B_mass_obs, array=np.asarray(mass_array, dtype=np.float64))
     loss = zfit.loss.ExtendedUnbinnedNLL(model=model, data=data)
     minimizer = zfit.minimize.Minuit()
     result = minimizer.minimize(loss)
@@ -89,79 +92,124 @@ def save_fitresult(result, out_json):
 # -----------------------------
 # 3) Plot mass fit
 # -----------------------------
-def plot_mass_fit(mass_array, B_mass_obs, model, sig_ext, bkg_ext, out_png, nbins=60):
-    lims = np.asarray(B_mass_obs.limits, dtype=float).reshape(-1)
-    lo = float(np.min(lims))
-    hi = float(np.max(lims))
 
+def plot_mass_fit(data_np, B_mass_obs, model, sig_ext, bkg_ext, outpath, nbins=60):
+    # Range from observable
+    lo, hi = 5.170, 5.500
 
-
-    counts, edges = np.histogram(mass_array, bins=nbins, range=(lo, hi))
+    # Bin the data
+    counts, edges = np.histogram(data_np, bins=nbins, range=(lo, hi))
     centers = 0.5 * (edges[:-1] + edges[1:])
-    widths = edges[1:] - edges[:-1]
+    widths = np.diff(edges)
 
-    x = zfit.Data.from_numpy(obs=B_mass_obs, array=centers)
+    # Errors
+    yerr = np.sqrt(counts)
 
-    y_tot = np.array(zfit.run(model.ext_pdf(x))) * widths
-    y_sig = np.array(zfit.run(sig_ext.ext_pdf(x))) * widths
-    y_bkg = np.array(zfit.run(bkg_ext.ext_pdf(x))) * widths
+    # Evaluate extended PDFs at bin centers
+    x = zfit.z.convert_to_tensor(centers)
+    w = zfit.z.convert_to_tensor(widths)
 
-    plt.figure()
-    plt.errorbar(centers, counts, yerr=np.sqrt(np.maximum(counts, 1.0)), fmt=".", label="data")
-    plt.plot(centers, y_tot, label="total")
-    plt.plot(centers, y_sig, label="signal")
-    plt.plot(centers, y_bkg, label="background")
+
+    # ext_pdf is events per unit x -> multiply by bin width -> counts per bin
+    y_tot = znp.asarray(model.ext_pdf(x) * w)
+    y_sig = znp.asarray(sig_ext.ext_pdf(x) * w)
+    y_bkg = znp.asarray(bkg_ext.ext_pdf(x) * w)
+
+    # Plot
+    plt.figure(figsize=(9, 6))
+
+    plt.errorbar(
+        centers, counts, yerr=yerr,
+        fmt="o", markersize=3,
+        capsize=2, elinewidth=1.2,
+        label="data",
+        zorder=10,   # draw on top
+    )
+
+
+    plt.plot(centers, y_tot, label="total", linewidth=2, zorder=2)
+    plt.plot(centers, y_sig, label="signal", linewidth=2, zorder=2)
+    plt.plot(centers, y_bkg, label="background", linewidth=2, zorder=2)
+
+
     plt.xlabel("B_mass")
     plt.ylabel("Counts / bin")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(out_png, dpi=200)
+    plt.savefig(outpath, dpi=200)
     plt.close()
 
 
 # -----------------------------
 # 4) Per-angle sWeight checks
 # -----------------------------
-def plot_sweight_checks_per_angle(
+def plot_sweight_overlays_per_angle(
     angles_mix, angles_sig_true, angles_bkg_true,
     w_sig, w_bkg,
     angle_names,
     out_dir,
     nbins=40,
+    density=True,   # True = compare shapes; False = compare raw yields
 ):
     os.makedirs(out_dir, exist_ok=True)
 
     for ang in angle_names:
-        x_mix = angles_mix[ang]
-        x_sig = angles_sig_true[ang]
-        x_bkg = angles_bkg_true[ang]
+        x_mix = np.asarray(angles_mix[ang])
+        x_sig = np.asarray(angles_sig_true[ang])
+        x_bkg = np.asarray(angles_bkg_true[ang])
 
+        # Binning
         lo = float(np.nanmin(np.concatenate([x_mix, x_sig, x_bkg])))
         hi = float(np.nanmax(np.concatenate([x_mix, x_sig, x_bkg])))
+        bins = np.linspace(lo, hi, nbins + 1)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        widths = np.diff(bins)
 
-        fig, axs = plt.subplots(2, 2, figsize=(10, 7), sharex=True)
-        axs = axs.flatten()
+        # SIGNAL overlay: (combined×w_sig) vs (truth sig) ---
+        hw_sig, _ = np.histogram(x_mix, bins=bins, weights=w_sig)
+        ht_sig, _ = np.histogram(x_sig, bins=bins)
 
-        axs[0].hist(x_mix, bins=nbins, range=(lo, hi), weights=w_sig)
-        axs[0].set_title(f"{ang}: combined × signal sWeight")
+        if density:
+            area_hw = np.sum(hw_sig * widths)
+            area_ht = np.sum(ht_sig * widths)
+            if area_hw > 0:
+                hw_sig = hw_sig / area_hw
+            if area_ht > 0:
+                ht_sig = ht_sig / area_ht
 
-        axs[1].hist(x_mix, bins=nbins, range=(lo, hi), weights=w_bkg)
-        axs[1].set_title(f"{ang}: combined × background sWeight")
+        plt.figure(figsize=(7, 5))
+        plt.step(centers, hw_sig, where="mid", linewidth=2, label="combined × signal sWeight")
+        plt.step(centers, ht_sig, where="mid", linewidth=2, label="truth signal only")
+        plt.xlabel(ang)
+        plt.ylabel("Density" if density else "Entries")
+        plt.title(f"{ang}: signal overlay")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, f"overlay_{ang}_signal.png"), dpi=200)
+        plt.close()
 
-        axs[2].hist(x_sig, bins=nbins, range=(lo, hi))
-        axs[2].set_title(f"{ang}: truth signal only")
+        # --- BKG overlay: (combined×w_bkg) vs (truth bkg) ---
+        hw_bkg, _ = np.histogram(x_mix, bins=bins, weights=w_bkg)
+        ht_bkg, _ = np.histogram(x_bkg, bins=bins)
 
-        axs[3].hist(x_bkg, bins=nbins, range=(lo, hi))
-        axs[3].set_title(f"{ang}: truth background only")
+        if density:
+            area_hw = np.sum(hw_bkg * widths)
+            area_ht = np.sum(ht_bkg * widths)
+            if area_hw > 0:
+                hw_bkg = hw_bkg / area_hw
+            if area_ht > 0:
+                ht_bkg = ht_bkg / area_ht
 
-        axs[2].set_xlabel(ang)
-        axs[3].set_xlabel(ang)
-        for ax in axs:
-            ax.set_ylabel("Entries")
-
-        fig.tight_layout()
-        fig.savefig(os.path.join(out_dir, f"sweight_check_{ang}.png"), dpi=200)
-        plt.close(fig)
+        plt.figure(figsize=(7, 5))
+        plt.step(centers, hw_bkg, where="mid", linewidth=2, label="combined × background sWeight")
+        plt.step(centers, ht_bkg, where="mid", linewidth=2, label="truth background only")
+        plt.xlabel(ang)
+        plt.ylabel("Density" if density else "Entries")
+        plt.title(f"{ang}: background overlay")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, f"overlay_{ang}_bkg.png"), dpi=200)
+        plt.close()
 
 
 # -----------------------------
@@ -174,33 +222,53 @@ def main():
     def load_root_sample(root_path, tree_name, branches):
         with uproot.open(root_path) as f:
             tree = f[tree_name]
-            arr = tree.arrays(branches, library="np")
+            arr = tree.arrays(branches, library="pd")
         return arr
 
     # -------------------------
     # LOAD DATA HERE
     # -------------------------
-    sig_path = "scripts/sig_toy.root"
+
+    # -------------------------
+    # Configure observable space
+    # -------------------------
+    B_mass = zfit.Space("B_mass", limits=(5.170, 5.500))
+
+
+    sig_path = "/ceph/submit/data/user/a/anbeck/B2KPiMM_michele/full.root"
     bkg_path = "genbkg/bkg_toy.root"
 
-    sig_tree = "signal"
+    sig_tree = "B02KstMuMu_Run1_centralQ2E_sig"
     bkg_tree = "background"
 
-    branches = ["B_mass", "cosThetaK", "cosThetaL"]
+    branches = ["B_mass", "cosThetaK", "cosThetaL", "mKpi", "q2"]
 
     arr_sig = load_root_sample(sig_path, sig_tree, branches)
     arr_bkg = load_root_sample(bkg_path, bkg_tree, branches)
 
-    mass_sig = arr_sig["B_mass"]
-    mass_bkg = arr_bkg["B_mass"]
+    arr_sig["B_mass"] /= 1000
+    arr_sig = arr_sig.query(f"(0.65<mKpi) &(mKpi<1.5)")
+    arr_sig = arr_sig.query(f"(1.1<q2) &(q2<7)")
+    arr_sig = arr_sig.query(f"(5.17<B_mass) &(B_mass<5.5)")
+
+    arr_bkg = arr_bkg.query(f"(0.65<mKpi) &(mKpi<1.5)")
+    arr_bkg = arr_bkg.query(f"(1.1<q2) &(q2<7)")
+    arr_bkg = arr_bkg.query(f"(5.17<B_mass) &(B_mass<5.5)")
+
+    # downsample (to not crush bkg in mass_fit.png)
+    arr_sig = arr_sig.sample(n=200000, random_state=1)
+
+    mass_sig = arr_sig["B_mass"].to_numpy(dtype=np.float64)
+    mass_bkg = arr_bkg["B_mass"].to_numpy(dtype=np.float64)
+
 
     angles_sig_true = {
-        "cosThetaK": arr_sig["cosThetaK"],
-        "cosThetaL": arr_sig["cosThetaL"],
+        "cosThetaK": arr_sig["cosThetaK"].to_numpy(dtype=np.float64),
+        "cosThetaL": arr_sig["cosThetaL"].to_numpy(dtype=np.float64),
     }
     angles_bkg_true = {
-        "cosThetaK": arr_bkg["cosThetaK"],
-        "cosThetaL": arr_bkg["cosThetaL"],
+        "cosThetaK": arr_bkg["cosThetaK"].to_numpy(dtype=np.float64),
+        "cosThetaL": arr_bkg["cosThetaL"].to_numpy(dtype=np.float64),
     }
 
 
@@ -216,11 +284,6 @@ def main():
     print("Loaded:")
     print("  signal events:", len(mass_sig), "mass range:", mass_sig.min(), mass_sig.max())
     print("  bkg events:   ", len(mass_bkg), "mass range:", mass_bkg.min(), mass_bkg.max())
-
-    # -------------------------
-    # Define mass observable
-    # -------------------------
-    B_mass = zfit.Space("B_mass", limits=(5.170, 5.500))
 
     # -------------------------
     # Build SHAPE PDFs (not extended) for prefit
@@ -265,6 +328,9 @@ def main():
     # Build combined dataset
     # -------------------------
     mass_mix = np.concatenate([mass_sig, mass_bkg])
+    print("DEBUG mix lens:", len(mass_sig), len(mass_bkg), len(mass_mix))
+    assert len(mass_mix) == len(mass_sig) + len(mass_bkg)
+
     angles_mix = {
         "cosThetaK": np.concatenate([angles_sig_true["cosThetaK"], angles_bkg_true["cosThetaK"]]),
         "cosThetaL": np.concatenate([angles_sig_true["cosThetaL"], angles_bkg_true["cosThetaL"]]),
@@ -293,12 +359,6 @@ def main():
 
     print("Combined yields fit: converged=", result.converged, " valid=", getattr(result, "valid", None))
     print("Nsig:", float(Nsig.value()), "Nbkg:", float(Nbkg.value()))
-
-
-    # -------------------------
-    # Configure observable space
-    # -------------------------
-    B_mass = zfit.Space("B_mass", limits=(5.170, 5.500))
 
     # Outputs
     os.makedirs("outputs/massfit", exist_ok=True)
@@ -372,14 +432,16 @@ def main():
     # Per-angle check plots
     # -------------------------
     angle_names = ["cosThetaK", "cosThetaL"]
-    plot_sweight_checks_per_angle(
+    plot_sweight_overlays_per_angle(
         angles_mix=angles_mix,
         angles_sig_true=angles_sig_true,
         angles_bkg_true=angles_bkg_true,
         w_sig=w_sig,
         w_bkg=w_bkg,
-        angle_names=angle_names,
+        angle_names=["cosThetaK", "cosThetaL"],
         out_dir="outputs/sweights_checks",
+        nbins=40,
+        density=True,
     )
 
     print("Done. Check outputs/massfit and outputs/sweights_checks")
