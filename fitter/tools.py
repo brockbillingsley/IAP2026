@@ -102,5 +102,24 @@ def parser():
     parser.add_argument('--binnedfit', action=argparse.BooleanOptionalAction, help="Do a binned fit?", default=False)
     parser.add_argument('--fix_to_truth', type=str, help="coefficients fixed to their truth", default=[], nargs='+')
     parser.add_argument('--fix_to_value', type=str, help="coefficients fixed to a value", default=[], nargs='+')
-    parser.add_argument('--constrain', type=str, help="constrain coefficients", default=[], nargs='+')  
+    parser.add_argument(
+        "--tree",
+        type=str,
+        default="B02KstMuMu_Run1_centralQ2E_sig",
+        help="TTree name inside the ROOT file."
+    )
+
+    parser.add_argument(
+        "--weight_branch",
+        type=str,
+        default="wSig",
+        help="Branch name for signal sWeights in the combined ROOT file (e.g. wSig)."
+    )
+    parser.add_argument(
+        "--constrain",
+        nargs="*",
+        default=[],
+        help="Parameters to constrain to their truth values with Gaussian constraints"
+    )
+
     return parser.parse_args()
