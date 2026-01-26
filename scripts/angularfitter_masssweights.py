@@ -37,6 +37,40 @@ def _scale_to_match(sum_target, sum_source):
         return 0.0
     return float(sum_target) / float(sum_source)
 
+def _scale_ref_to_match_data(ref_raw, data_counts, bin_width):
+    """
+    ref_raw: reference array loaded from H5 (either counts/bin OR density)
+    data_counts: histogram bin contents in *counts* (sum of weights per bin)
+    bin_width: float
+
+    Returns: ref_y in the SAME units as plot (i.e. density = counts/bin_width)
+    """
+    # What points represent in total counts (sum of weights):
+    target_total = float(np.sum(data_counts))
+
+    # Two hypotheses for what ref_raw means:
+    # H1: ref_raw is COUNTS per bin
+    ref_total_counts = float(np.sum(ref_raw))
+
+    # H2: ref_raw is already a DENSITY (counts/bin_width), so total counts ~ sum(density)*bin_width
+    ref_total_from_density = float(np.sum(ref_raw) * bin_width)
+
+    # Pick the interpretation that better matches the target total
+    err_counts = abs(ref_total_counts - target_total)
+    err_density = abs(ref_total_from_density - target_total)
+
+    if err_density < err_counts:
+        # ref_raw is density; scale density so that integral matches target_total
+        scale = target_total / ref_total_from_density if ref_total_from_density > 0 else 1.0
+        ref_y = ref_raw * scale              # still density
+    else:
+        # ref_raw is counts; scale counts to target, then convert to density
+        scale = target_total / ref_total_counts if ref_total_counts > 0 else 1.0
+        ref_counts = ref_raw * scale
+        ref_y = ref_counts / bin_width       # convert to density to match plot
+
+    return ref_y
+
 
 args = tools.parser()
 if getattr(args, "settings", None) is None:
@@ -540,33 +574,39 @@ while i < ntoys:
             # Pick the matching reference variable
             ref_x = ref_vals[vkey]  # vkey is "mKpi" or "q2"
 
-            # Compute reference histograms (counts per bin)
+            # Compute reference histograms (COUNTS per bin)
             ref_AS = _weighted_hist(ref_x, ref_vals["wS"], edges)
             ref_A0 = _weighted_hist(ref_x, ref_vals["wA0"], edges)
             ref_A1 = _weighted_hist(ref_x, ref_vals["wA1"], edges)
 
-            # 1) Scale A0 and A1 to AS
+            # 1) Scale A0 and A1 to AS (shape comparison)
             sA0 = _scale_to_match(ref_AS.sum(), ref_A0.sum())
             sA1 = _scale_to_match(ref_AS.sum(), ref_A1.sum())
             ref_A0_scaled = ref_A0 * sA0
             ref_A1_scaled = ref_A1 * sA1
 
-            # 2) Scale the whole reference set to match current plot normalization
-            #    (so the overlay matches weighted-yield scale)
-            #    Sum of that histogram * binwidth is ~ sum(weights). Match sums in "counts" space first.
-            #    Already have `weights` (w_sig array used for the plot).
-            ref_to_data = _scale_to_match(np.sum(weights), ref_AS.sum())
+            # 2) Scale the whole reference set to match *the plotted Hw yield*
+            #    IMPORTANT: use the binned histogram sum, not np.sum(weights)
+            Hw_counts = Hw.values(flow=False)   # sum of weights per bin (counts)
+            target_total = float(np.sum(Hw_counts))
+
+            ref_total = float(np.sum(ref_AS))
+            ref_to_data = (target_total / ref_total) if ref_total > 0 else 1.0
+
+            print("target_total (Hw sum) =", target_total)
+            print("ref_total (before scale) =", ref_total, " scale =", ref_to_data)
+
             ref_AS *= ref_to_data
             ref_A0_scaled *= ref_to_data
             ref_A1_scaled *= ref_to_data
 
-            # Convert to "per binwidth"
+            # Convert counts/bin -> density (counts / binwidth) to match your ylabel
             ref_AS_plot = ref_AS / binwidth
             ref_A0_plot = ref_A0_scaled / binwidth
             ref_A1_plot = ref_A1_scaled / binwidth
 
-            # Draw as step-lines (style matches the reference plots)
-            plt.step(centers, ref_AS_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref AS (exact)")
+            # Draw as step-lines
+            plt.step(centers, ref_AS_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref AS (scaled)")
             plt.step(centers, ref_A0_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref A0 (scaled)")
             plt.step(centers, ref_A1_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref A1 (scaled)")
             # ---------------------------------------------------------
