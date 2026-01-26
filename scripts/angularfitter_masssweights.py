@@ -600,15 +600,10 @@ while i < ntoys:
             ref_A0_scaled *= ref_to_data
             ref_A1_scaled *= ref_to_data
 
-            # Convert counts/bin -> density (counts / binwidth) to match your ylabel
-            ref_AS_plot = ref_AS / binwidth
-            ref_A0_plot = ref_A0_scaled / binwidth
-            ref_A1_plot = ref_A1_scaled / binwidth
-
             # Draw as step-lines
-            plt.step(centers, ref_AS_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref AS (scaled)")
-            plt.step(centers, ref_A0_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref A0 (scaled)")
-            plt.step(centers, ref_A1_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref A1 (scaled)")
+            plt.step(centers, ref_AS, where="mid", linestyle="--", linewidth=1.6, label="Ref AS (scaled)")
+            plt.step(centers, ref_A0_scaled, where="mid", linestyle="--", linewidth=1.6, label="Ref A0 (scaled)")
+            plt.step(centers, ref_A1_scaled, where="mid", linestyle="--", linewidth=1.6, label="Ref A1 (scaled)")
             # ---------------------------------------------------------
 
             plt.legend(handletextpad=0.1, fontsize=24)
