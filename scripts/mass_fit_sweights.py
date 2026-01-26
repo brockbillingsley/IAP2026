@@ -255,8 +255,6 @@ def main():
     arr_bkg = arr_bkg.query(f"(1.1<q2) &(q2<7)")
     arr_bkg = arr_bkg.query(f"(5.17<B_mass) &(B_mass<5.5)")
 
-    # downsample (to not crush bkg in mass_fit.png)
-    arr_sig = arr_sig.sample(n=200000, random_state=1)
 
     mass_sig = arr_sig["B_mass"].to_numpy(dtype=np.float64)
     mass_bkg = arr_bkg["B_mass"].to_numpy(dtype=np.float64)
@@ -270,6 +268,14 @@ def main():
         "cosThetaK": arr_bkg["cosThetaK"].to_numpy(dtype=np.float64),
         "cosThetaL": arr_bkg["cosThetaL"].to_numpy(dtype=np.float64),
     }
+
+    # Keep mKpi and q2 arrays
+    mkpi_sig = arr_sig["mKpi"].to_numpy() if hasattr(arr_sig["mKpi"], "to_numpy") else np.asarray(arr_sig["mKpi"])
+    mkpi_bkg = arr_bkg["mKpi"].to_numpy() if hasattr(arr_bkg["mKpi"], "to_numpy") else np.asarray(arr_bkg["mKpi"])
+
+    q2_sig = arr_sig["q2"].to_numpy() if hasattr(arr_sig["q2"], "to_numpy") else np.asarray(arr_sig["q2"])
+    q2_bkg = arr_bkg["q2"].to_numpy() if hasattr(arr_bkg["q2"], "to_numpy") else np.asarray(arr_bkg["q2"])
+
 
 
     # ---- Step 3 sanity checks ----
@@ -337,6 +343,12 @@ def main():
     }
     assert len(angles_mix["cosThetaK"]) == len(mass_mix)
     assert len(angles_mix["cosThetaL"]) == len(mass_mix)
+
+    mkpi_mix = np.concatenate([mkpi_sig, mkpi_bkg])
+    q2_mix   = np.concatenate([q2_sig, q2_bkg])
+
+    assert len(mkpi_mix) == len(mass_mix)
+    assert len(q2_mix) == len(mass_mix)
 
 
     # -------------------------
@@ -407,14 +419,17 @@ def main():
 
     # Safety check: all arrays must align 1-to-1 by event
     assert len(mass_mix) == len(w_sig) == len(w_bkg) == len(angles_mix["cosThetaK"]) == len(angles_mix["cosThetaL"])
+    assert len(mass_mix) == len(angles_mix["cosThetaK"]) == len(angles_mix["cosThetaL"]) == len(mkpi_mix) == len(q2_mix) == len(w_sig) == len(w_bkg)
 
     with uproot.recreate(out_root) as f:
         f["events"] = {
-            "B_mass": mass_mix.astype("float64"),
-            "cosThetaK": angles_mix["cosThetaK"].astype("float64"),
-            "cosThetaL": angles_mix["cosThetaL"].astype("float64"),
-            "w_sig": w_sig.astype("float64"),
-            "w_bkg": w_bkg.astype("float64"),
+            "B_mass":    np.asarray(mass_mix, dtype="float64"),
+            "cosThetaK": np.asarray(angles_mix["cosThetaK"], dtype="float64"),
+            "cosThetaL": np.asarray(angles_mix["cosThetaL"], dtype="float64"),
+            "mKpi":      np.asarray(mkpi_mix, dtype="float64"),
+            "q2":        np.asarray(q2_mix, dtype="float64"),
+            "w_sig":     np.asarray(w_sig, dtype="float64"),
+            "w_bkg":     np.asarray(w_bkg, dtype="float64"),
         }
 
     print(f"Wrote {out_root} (tree: events)")

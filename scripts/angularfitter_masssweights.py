@@ -18,6 +18,25 @@ np.random.seed(0)
 zfit.settings.set_seed(0)
 zfit.settings.set_verbosity(10)
 
+import pandas as pd
+
+def _pick_col(df, candidates, label):
+    """Return first existing column name from candidates."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    raise KeyError(f"Could not find {label} in H5. Tried: {candidates}. Available: {list(df.columns)}")
+
+def _weighted_hist(values, weights, edges):
+    """Histogram returning counts per bin (not /binwidth)."""
+    h, _ = np.histogram(values, bins=edges, weights=weights)
+    return h.astype(float)
+
+def _scale_to_match(sum_target, sum_source):
+    if sum_source == 0:
+        return 0.0
+    return float(sum_target) / float(sum_source)
+
 
 args = tools.parser()
 if getattr(args, "settings", None) is None:
@@ -278,6 +297,28 @@ print("Available columns:", list(datai.columns))
 
 print("weights summary:", float(weights.min()), float(weights.mean()), float(weights.max()))
 
+# Load reference H5 (for overlay lines)
+ref_df = pd.read_hdf(args.ref_h5, key="data")
+
+ref_mKpi_col = _pick_col(ref_df, ["mKpi", "m_kpi", "mkpi"], "mKpi")
+ref_q2_col   = _pick_col(ref_df, ["q2", "Q2"], "q2")
+
+# Reference truth weights
+ref_wS_col   = _pick_col(ref_df, ["wS", "w_sig", "wSig", "w_signal"], "wS (signal)")
+ref_wA0_col  = _pick_col(ref_df, ["wA0", "w_a0", "wA_0"], "wA0")
+# in the ref file it’s wApp (A_perp). treat as "A1" like legend
+ref_wA1_col  = _pick_col(ref_df, ["wApp", "wA1", "wAperp", "wA_perp"], "wApp (A1/App)")
+
+# Numpy views
+ref_vals = {
+    "mKpi": ref_df[ref_mKpi_col].to_numpy(dtype=float),
+    "q2":   ref_df[ref_q2_col].to_numpy(dtype=float),
+    "wS":   ref_df[ref_wS_col].to_numpy(dtype=float),
+    "wA0":  ref_df[ref_wA0_col].to_numpy(dtype=float),
+    "wA1":  ref_df[ref_wA1_col].to_numpy(dtype=float),
+}
+
+print("Loaded ref h5:", args.ref_h5, "cols:", list(ref_df.columns))
 
 # Prepare for toys
 pulls = {}
@@ -489,6 +530,46 @@ while i < ntoys:
             Hw.fill(datatoy[vkey], weight=weights)
 
             mplhep.histplot(Hw, histtype='errorbar', label='Signal sWeighted', xerr=True, yerr=True, marker='.')
+
+                        # ---------- Reference overlay (from args.ref_h5) ----------
+            # Use same binning/range
+            edges = H.axes[0].edges
+            binwidth = edges[1] - edges[0]
+            centers = 0.5 * (edges[:-1] + edges[1:])
+
+            # Pick the matching reference variable
+            ref_x = ref_vals[vkey]  # vkey is "mKpi" or "q2"
+
+            # Compute reference histograms (counts per bin)
+            ref_AS = _weighted_hist(ref_x, ref_vals["wS"], edges)
+            ref_A0 = _weighted_hist(ref_x, ref_vals["wA0"], edges)
+            ref_A1 = _weighted_hist(ref_x, ref_vals["wA1"], edges)
+
+            # 1) Scale A0 and A1 to AS
+            sA0 = _scale_to_match(ref_AS.sum(), ref_A0.sum())
+            sA1 = _scale_to_match(ref_AS.sum(), ref_A1.sum())
+            ref_A0_scaled = ref_A0 * sA0
+            ref_A1_scaled = ref_A1 * sA1
+
+            # 2) Scale the whole reference set to match current plot normalization
+            #    (so the overlay matches weighted-yield scale)
+            #    Sum of that histogram * binwidth is ~ sum(weights). Match sums in "counts" space first.
+            #    Already have `weights` (w_sig array used for the plot).
+            ref_to_data = _scale_to_match(np.sum(weights), ref_AS.sum())
+            ref_AS *= ref_to_data
+            ref_A0_scaled *= ref_to_data
+            ref_A1_scaled *= ref_to_data
+
+            # Convert to "per binwidth"
+            ref_AS_plot = ref_AS / binwidth
+            ref_A0_plot = ref_A0_scaled / binwidth
+            ref_A1_plot = ref_A1_scaled / binwidth
+
+            # Draw as step-lines (style matches the reference plots)
+            plt.step(centers, ref_AS_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref AS (exact)")
+            plt.step(centers, ref_A0_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref A0 (scaled)")
+            plt.step(centers, ref_A1_plot, where="mid", linestyle="--", linewidth=1.6, label="Ref A1 (scaled)")
+            # ---------------------------------------------------------
 
             plt.legend(handletextpad=0.1, fontsize=24)
             plt.axhline(0, color='black', linewidth=1)

@@ -20,3 +20,9 @@ paperstyle.py
 
 # Logs
 *.log
+
+# Large local outputs
+sweights/standard/data_qsq-1.1-7.0/0.h5
+
+# Large local outputs
+sweights/standard/data_qsq-1.1-7.0/0.h5

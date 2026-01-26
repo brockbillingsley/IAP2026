@@ -121,5 +121,10 @@ def parser():
         default=[],
         help="Parameters to constrain to their truth values with Gaussian constraints"
     )
+    parser.add_argument(
+    "--ref_h5",
+    default="fitter/sweights/standard/data_qsq-1.1-7.0/0.h5",
+    help="Reference .h5 with columns like wS, wA0, wApp (and mKpi/q2).",
+)
 
     return parser.parse_args()
