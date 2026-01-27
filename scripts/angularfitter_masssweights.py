@@ -9,6 +9,8 @@ from myconstants import *
 import tools  # Some helpful functions
 import mypdfs  # Custom pdfs
 import angularfunctions as af  # Angular functions
+import h5py
+import os
 
 # Makes nice default plots
 import mplhep
@@ -71,6 +73,101 @@ def _scale_ref_to_match_data(ref_raw, data_counts, bin_width):
 
     return ref_y
 
+def _read_ref_components_h5(ref_h5):
+    """
+    Read reference component weights + variables from an HDF5 file.
+
+    Works for pandas "fixed" HDF layout using only h5py (no pytables needed).
+
+    Returns:
+        wS_ref, wA0_ref, wA1_ref, ref_vals_dict
+    """
+    import numpy as np
+    import h5py
+
+    def _dec(x):
+        return x.decode() if isinstance(x, (bytes, bytearray)) else str(x)
+
+    # --- helper: pick a key from dict by candidate names (case-insensitive + substring) ---
+    def _pick_key(d, candidates):
+        keys = list(d.keys())
+        low = {k.lower(): k for k in keys}
+        for c in candidates:
+            if c.lower() in low:
+                return low[c.lower()]
+        for c in candidates:
+            for k in keys:
+                if c.lower() in k.lower():
+                    return k
+        raise KeyError(f"Could not find any of {candidates} among keys: {keys}")
+
+    with h5py.File(ref_h5, "r") as f:
+        # Expect pandas fixed DataFrame under group "data"
+        if "data" not in f:
+            raise KeyError(f"Expected group 'data' in {ref_h5}. Top-level keys: {list(f.keys())}")
+
+        g = f["data"]
+
+        # columns live in axis0
+        axis0 = [_dec(x) for x in g["axis0"][...]]  # all columns (may include all blocks)
+        # axis1 is index (not needed unless debugging)
+        # axis1 = g["axis1"][...]
+
+        # Reconstruct columns from each block
+        ref_vals = {}
+        i = 0
+        while f"block{i}_items" in g:
+            items = [_dec(x) for x in g[f"block{i}_items"][...]]
+            vals = np.asarray(g[f"block{i}_values"][...])
+
+            # pandas stores values as (ncols_in_block, nrows) -> transpose to (nrows, ncols)
+            if vals.ndim == 2 and vals.shape[0] == len(items):
+                vals = vals.T
+
+            for j, name in enumerate(items):
+                ref_vals[name] = vals[:, j].astype(float) if np.issubdtype(vals[:, j].dtype, np.number) else vals[:, j]
+            i += 1
+
+    # ---- Now pick the weight columns from ref_vals ----
+    # You may need to tweak candidates after you print columns (see command above).
+    wS_key  = _pick_key(ref_vals, ["wS", "wAS", "w_refS", "wSig", "w_sig", "wsig"])
+    wA0_key = _pick_key(ref_vals, ["wA0", "w0", "w_refA0"])
+    # In this ref file, "A1" is stored as "App"
+    wA1_key = _pick_key(ref_vals, ["wA1", "wApp", "w1", "w_refA1", "w_refApp"])
+
+
+    wS_ref  = np.asarray(ref_vals[wS_key],  dtype=float)
+    wA0_ref = np.asarray(ref_vals[wA0_key], dtype=float)
+    wA1_ref = np.asarray(ref_vals[wA1_key], dtype=float)
+
+    # Normalize naming: downstream code expects "wA1"
+    ref_vals["wA1"] = wA1_ref
+
+    return wS_ref, wA0_ref, wA1_ref, ref_vals
+
+
+def _components_to_fracs(wS, wA0, wA1):
+    """
+    Convert component weights -> per-event fractions that sum to 1.
+    Clip negatives to 0 (safety).
+    """
+    wS  = np.clip(wS,  0.0, np.inf)
+    wA0 = np.clip(wA0, 0.0, np.inf)
+    wA1 = np.clip(wA1, 0.0, np.inf)
+
+    denom = wS + wA0 + wA1
+    denom_safe = np.where(denom > 0, denom, 1.0)
+
+    fS  = wS  / denom_safe
+    fA0 = wA0 / denom_safe
+    fA1 = wA1 / denom_safe
+
+    mask0 = denom <= 0
+    fS[mask0] = 0.0
+    fA0[mask0] = 0.0
+    fA1[mask0] = 0.0
+
+    return fS, fA0, fA1
 
 args = tools.parser()
 if getattr(args, "settings", None) is None:
@@ -541,8 +638,9 @@ while i < ntoys:
             plt.xlim(v.limits[0][0], v.limits[1][0])
             plt.xlabel(l, ha="right", x=1)
             plt.ylabel(fr"Data points / {(dist/nbins):.2f}",ha="right",y=1)
-            plt.savefig(f"plots/{args.polynomial}/{name}/{i}_{n}.pdf")
+            plt.savefig(f"plots/{args.polynomial}/{name}/{i}_{n}.png", dpi=200)
             plt.close()
+
 
         # Also make weighted plots
         for vkey, l, u in zip(["mKpi", "q2"], [r"$m(K\pi)$", r"$q^2$"], [r"GeV$/c^2$", r"GeV$^2/c^4$"]):
@@ -556,6 +654,8 @@ while i < ntoys:
             else:
                 H.fill(xplot, weight=wSig_plot)
             mplhep.histplot(H, color='black', histtype='errorbar', label='Toy data', xerr=True, yerr=True, marker='.', zorder=20)
+
+
             # Weighted histogram using *signal* mass sWeights only
             Hw = hist.Hist(
                 hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False),
@@ -565,53 +665,47 @@ while i < ntoys:
 
             mplhep.histplot(Hw, histtype='errorbar', label='Signal sWeighted', xerr=True, yerr=True, marker='.')
 
-                        # ---------- Reference overlay (from args.ref_h5) ----------
-            # Use same binning/range
+            # ---------- Reference overlay (from args.ref_h5) ----------
             edges = H.axes[0].edges
-            binwidth = edges[1] - edges[0]
             centers = 0.5 * (edges[:-1] + edges[1:])
 
-            # Pick the matching reference variable
             ref_x = ref_vals[vkey]  # vkey is "mKpi" or "q2"
 
-            # Compute reference histograms (COUNTS per bin)
-            ref_AS = _weighted_hist(ref_x, ref_vals["wS"], edges)
+            # Reference component histograms in COUNTS per bin (sum of weights in each bin)
+            ref_S  = _weighted_hist(ref_x, ref_vals["wS"],  edges)
             ref_A0 = _weighted_hist(ref_x, ref_vals["wA0"], edges)
             ref_A1 = _weighted_hist(ref_x, ref_vals["wA1"], edges)
 
-            # 1) Scale A0 and A1 to AS (shape comparison)
-            sA0 = _scale_to_match(ref_AS.sum(), ref_A0.sum())
-            sA1 = _scale_to_match(ref_AS.sum(), ref_A1.sum())
-            ref_A0_scaled = ref_A0 * sA0
-            ref_A1_scaled = ref_A1 * sA1
+            # Scale reference so that TOTAL ref yield matches TOTAL data yield in Hw
+            target_total = float(np.sum(Hw.values()))  # total sum of weights in data hist
+            ref_total = float(np.sum(ref_S + ref_A0 + ref_A1))
 
-            # 2) Scale the whole reference set to match *the plotted Hw yield*
-            #    IMPORTANT: use the binned histogram sum, not np.sum(weights)
-            Hw_counts = Hw.values(flow=False)   # sum of weights per bin (counts)
-            target_total = float(np.sum(Hw_counts))
+            ref_scale = (target_total / ref_total) if ref_total > 0 else 1.0
 
-            ref_total = float(np.sum(ref_AS))
-            ref_to_data = (target_total / ref_total) if ref_total > 0 else 1.0
+            ref_S  = ref_S  * ref_scale
+            ref_A0 = ref_A0 * ref_scale
+            ref_A1 = ref_A1 * ref_scale
 
-            print("target_total (Hw sum) =", target_total)
-            print("ref_total (before scale) =", ref_total, " scale =", ref_to_data)
+            ref_sum = ref_S + ref_A0 + ref_A1
+            plt.step(centers, ref_sum, where="mid", linestyle="-.", linewidth=1.8, label="Ref TOTAL (scaled)")
 
-            ref_AS *= ref_to_data
-            ref_A0_scaled *= ref_to_data
-            ref_A1_scaled *= ref_to_data
+            print("[info] ref_scale =", ref_scale,
+                "target_total =", target_total,
+                "ref_total(before) =", ref_total)
 
-            # Draw as step-lines
-            plt.step(centers, ref_AS, where="mid", linestyle="--", linewidth=1.6, label="Ref AS (scaled)")
-            plt.step(centers, ref_A0_scaled, where="mid", linestyle="--", linewidth=1.6, label="Ref A0 (scaled)")
-            plt.step(centers, ref_A1_scaled, where="mid", linestyle="--", linewidth=1.6, label="Ref A1 (scaled)")
+            # Draw as dashed step lines (counts/bin)
+            plt.step(centers, ref_S,  where="mid", linestyle="--", linewidth=1.6, label="Ref S (scaled)")
+            plt.step(centers, ref_A0, where="mid", linestyle="--", linewidth=1.6, label="Ref A0 (scaled)")
+            plt.step(centers, ref_A1, where="mid", linestyle="--", linewidth=1.6, label="Ref A1/App (scaled)")
             # ---------------------------------------------------------
+
 
             plt.legend(handletextpad=0.1, fontsize=24)
             plt.axhline(0, color='black', linewidth=1)
             plt.xlim(mi, ma)
             plt.xlabel(l + f" [{u}]", ha="right", x=1)
-            plt.ylabel(fr"$\sum$ wSig / ({dist/nbins:.2f} {u})", ha="right", y=1)
-            plt.savefig(f"plots/{args.polynomial}/{name}/{i}_{vkey}_weighted.pdf")
+            plt.ylabel(r"$\sum$ weights / bin", ha="right", y=1)
+            plt.savefig(f"plots/{args.polynomial}/{name}/{i}_{vkey}_weighted.png", dpi=200)
             plt.close()
 
 
