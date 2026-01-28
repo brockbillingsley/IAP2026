@@ -1,3 +1,12 @@
+import os, sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+FITTER_DIR = os.path.join(REPO_ROOT, "fitter")
+
+for p in (REPO_ROOT, FITTER_DIR):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 import numpy as np  # Numerical library
 import yaml  # For reading YAML files
 import uproot  # For reading ROOT files
@@ -214,10 +223,23 @@ if getattr(args, "settings", None) is None:
 if getattr(args, "data", None) is None:
     raise RuntimeError("Missing --data. Example: --data outputs/combined_with_sweights.root")
 
+# ------------------ Random subsample configuration ------------------
+RANDOM_SAMPLE_N_DEFAULT = 100000
+
+# We are reusing --toy as "random subsample once" (NOT 100 toys)
+DO_RANDOM_SUBSAMPLE_ONCE = bool(getattr(args, "toy", False))
+
+# A real toy-study would be something else; for now disable it entirely:
+DO_TOY_STUDY = False
+
+RANDOM_SAMPLE_N = int(getattr(args, "nsig", RANDOM_SAMPLE_N_DEFAULT) or RANDOM_SAMPLE_N_DEFAULT)
+DO_PULLS = bool(getattr(args, "toy", False)) and (not DO_RANDOM_SUBSAMPLE_ONCE)
+# -------------------------------------------------------------------
 
 
-if args.toy:
-    name = "toy"
+
+if DO_RANDOM_SUBSAMPLE_ONCE:
+    name = "rand"
 else:
     name = "data"
 
@@ -267,12 +289,9 @@ for zi in args.fix_to_zero:
 for i in range(0, len(args.fix_to_value), 2):
     truth[args.fix_to_value[i]]["value"] = float(args.fix_to_value[i+1])
 
-if args.toy:
-    ntoys = 100
-    nbins = 30
-else:
-    ntoys = 1
-    nbins = 50
+# For the random-subsample task we always fit once
+ntoys = 1
+nbins = 50
 
 # Initialize parameters
 App = zfit.Parameter("App", 0.1670, -1.0, 2.0)
@@ -313,7 +332,17 @@ AS = zfit.ComposedParameter("AS", ASconditions,
                             params={'A0': A0, 'App': App, 'Aqc': Aqc, 'Aqs': Aqs})
 
 # total yield
-Nsig = zfit.Parameter("Nsig", truth['Nsig']["value"], 0.0, 1.0e8)
+# --- total yield (Nsig) ---
+# Some settings files (e.g. fit result dumps) may not include Nsig; fall back gracefully.
+if isinstance(truth, dict) and "Nsig" in truth and isinstance(truth["Nsig"], dict) and "value" in truth["Nsig"]:
+    Nsig_init = float(truth["Nsig"]["value"])
+else:
+    # Fallback: use 1.0 for now; we'll set a better value after reading data/weights.
+    Nsig_init = 1.0
+    print("[warn] settings has no Nsig; will initialize Nsig from data after reading the tree.")
+
+Nsig = zfit.Parameter("Nsig", Nsig_init, 0.0, 1.0e8)
+
 
 
 # component yields
@@ -414,11 +443,26 @@ pdfs = {m.get_yield(): m for m in pdfsweights.get_models()}
 
 
 # Read the data
+# Read the data
 with uproot.open(args.data) as f:
     tree = f[args.tree]
 
-    # Read what we need
-    cols = ["cosThetaL", "cosThetaK", "mKpi", "q2", args.weight_branch]
+    base_cols = ["cosThetaL", "cosThetaK", "mKpi", "q2"]
+    cols = list(base_cols)
+
+    # Only request a weight branch if the user explicitly provided one AND it exists in the file
+    want_w = getattr(args, "weight_branch", None)
+
+    # Some parsers default weight_branch="wSig"; treat that as "not requested" unless it exists
+    tree_keys = set(k.split(";")[0] for k in tree.keys())
+    if want_w and (want_w in tree_keys):
+        cols.append(want_w)
+        use_weight_branch = want_w
+    else:
+        use_weight_branch = None
+        if want_w and (want_w not in tree_keys):
+            print(f"[warn] weight branch '{want_w}' not found in tree; using unit weights.")
+
     datai = tree.arrays(cols, library="pd")
 
     # Build the angular columns expected by the rest of the code
@@ -430,36 +474,64 @@ with uproot.open(args.data) as f:
     datai.dropna(inplace=True)
     datai = datai.query(f"({args.qsq[0]} < q2) & (q2 < {args.qsq[1]})")
 
-    # Pull out weights
-    weights = datai[args.weight_branch].to_numpy(dtype=float)
+    # Weights: unit weights unless we successfully loaded a branch
+    if use_weight_branch is None:
+        weights = np.ones(len(datai), dtype=float)
+    else:
+        weights = datai[use_weight_branch].to_numpy(dtype=float)
+
+    print("Number of rows after cuts:", len(datai))
+    print("Using weight branch:", use_weight_branch if use_weight_branch else "(unit weights)")
+    print("weights min/mean/max:", float(weights.min()), float(weights.mean()), float(weights.max()))
+    print("sum(weights):", float(weights.sum()))
+
+    # If settings didn't provide Nsig, initialize it from the data we actually fit
+    if not ("Nsig" in truth and isinstance(truth["Nsig"], dict) and "value" in truth["Nsig"]):
+        # If weight branch is a signal sWeight, sum(weights) is a strong starting guess for signal yield
+        Nsig_guess = float(np.sum(weights)) if weights is not None else float(len(datai))
+        Nsig.set_value(max(Nsig_guess, 1.0))
+        print(f"[info] Set Nsig initial value from weights: {Nsig.value()}")
 
     print("Number of rows after cuts:", len(datai))
     print("Weight branch: ", args.weight_branch)
     print("weights min/max: ", float(weights.min()), float(weights.max()))
     print("sum(weights): ", float(weights.sum()))
 
+# ------------------ Random subsample (signal+background file) ------------------
+if DO_RANDOM_SUBSAMPLE_ONCE:
+    n_avail = len(datai)
+    n_take = min(RANDOM_SAMPLE_N, n_avail)
+    if n_take < RANDOM_SAMPLE_N:
+        print(f"[warn] Requested {RANDOM_SAMPLE_N} but only {n_avail} available after cuts; taking {n_take}.")
 
-# Select requested number of data points and ranges
-if args.toy:
-    if len(args.binned) == 2:
-        # Toy in bins
-        frac = len(datai.query(f"({args.binned[0]}<q2) & (q2<{args.binned[1]})"))/len(datai)
-        print("Fraction of data in bin:", frac)
-        truth["Nsig"]["value"] = int(args.nsig*frac)
+    datai = datai.sample(n=n_take, replace=False, random_state=0).reset_index(drop=True)
+
+    # IMPORTANT: keep weights consistent with what we actually loaded
+    if use_weight_branch is None:
+        weights = np.ones(len(datai), dtype=float)
     else:
-        # Toy
-        truth["Nsig"]["value"] = args.nsig
-    Nsig.set_value(truth["Nsig"]["value"])
-else:
-    if len(args.binned) == 2:
-        # Data in bins
-        datai.query(f"({args.binned[0]}<q2) &(q2<{args.binned[1]})", inplace=True)
-    weights = datai[args.weight_branch].to_numpy(dtype=float)
-    data = zfit.Data.from_numpy(
-        obs=angles,
-        array=datai[["cosh", "cosl"]].to_numpy(dtype=float),
-        weights=weights,
-    )
+        weights = datai[use_weight_branch].to_numpy(dtype=float)
+
+    # We fit once
+    ntoys = 1
+    name += f"_rand{n_take}"
+
+    print(f"[info] Using random subsample once: n={n_take}, ntoys={ntoys}, name={name}")
+    tools.makedirs(args.polynomial, name)
+# -------------------------------------------------------------------
+
+
+# Build the zfit dataset from the (possibly subsampled) dataframe
+data = zfit.Data.from_numpy(
+    obs=angles,
+    array=datai[["cosh", "cosl"]].to_numpy(dtype=float),
+    weights=weights,
+)
+
+print("Using weight branch:", use_weight_branch if use_weight_branch else "(unit weights)")
+print("Available columns:", list(datai.columns))
+print("weights summary:", float(weights.min()), float(weights.mean()), float(weights.max()))
+
 
 
 print("Using weight branch:", args.weight_branch)
@@ -492,9 +564,10 @@ print("Loaded ref h5:", args.ref_h5, "cols:", list(ref_df.columns))
 
 # Prepare for toys
 pulls = {}
-for p in fitpdf.get_params():
-    if p.floating:
-        pulls[p.name] = np.zeros(ntoys)
+if DO_PULLS:
+    for p in fitpdf.get_params():
+        if p.floating:
+            pulls[p.name] = np.zeros(ntoys)
 X = np.linspace(-1, 1, 100)
 
 
@@ -516,19 +589,16 @@ while i < ntoys:
     np.random.seed(seed)
 
     # create minimizer
-    if args.toy:
-        minimizer = zfit.minimize.Minuit(strategy=zfit.minimize.DefaultToyStrategy)
-    else:  # easier for debugging data
-        minimizer = zfit.minimize.Minuit()
+    minimizer = zfit.minimize.Minuit()
 
-    if args.toy:
-        NN = np.random.poisson(args.nsig)
-        datatoy = datai.sample(n=NN, replace=True)
-        if len(args.binned) == 2:
-            datatoy.query(f"({args.binned[0]}<q2) &(q2<{args.binned[1]})", inplace=True)
-        data = zfit.Data.from_pandas(datatoy[["cosh","cosl"]], obs=angles)
-    else:
-        datatoy = datai
+    # For this task, always fit exactly what is in datai/weights (already subsampled if enabled)
+    datatoy = datai
+    data = zfit.Data.from_numpy(
+        obs=angles,
+        array=datatoy[["cosh", "cosl"]].to_numpy(dtype=float),
+        weights=weights,
+    )
+
 
     # Create the loss
     loss = zfit.loss.UnbinnedNLL(model=fitpdf, data=data)
@@ -643,8 +713,10 @@ while i < ntoys:
         pi += 1
 
     outname = f"plots/{args.polynomial}/{name}/results/{i}.yml"
+    os.makedirs(os.path.dirname(outname), exist_ok=True)  # <-- ADD THIS LINE
     with open(outname, 'w') as yaml_file:
         yaml.dump(paramdict, yaml_file, default_flow_style=False)
+
 
 # Compute sWeights
     try:
@@ -669,7 +741,7 @@ while i < ntoys:
     print("[check] total sum sweights", float(np.sum(sAS+sA0+sApp+sAq)), "Nsig", float(Nsig.value()))
 
     # Save the pulls for toys
-    if args.toy:
+    if DO_PULLS:
         for k in pulls.keys():
             par = result.params[k]
             if k in args.constrain:
@@ -692,7 +764,7 @@ while i < ntoys:
             # Step 1) Plot the data
             H = hist.Hist(hist.axis.Regular(nbins, v.limits[0][0][0], v.limits[1][0][0], underflow=False, overflow=False))
             H.fill(datai[n].to_numpy(), weight=weights)
-            mplhep.histplot(H, color='black', histtype='errorbar', label='Toy data', xerr=True, yerr=True, marker='.')
+            mplhep.histplot(H, color='black', histtype='errorbar', label='Data (raw)', xerr=True, yerr=True, marker='.')
 
             # Step 2) Plot the individual components
             projAS = pdfs[N_AS].create_projection_pdf(obs=v)
@@ -757,10 +829,10 @@ while i < ntoys:
             H_App.fill(vals, weight=wSig_App)
             H_Aq.fill(vals, weight=wSig_Aq)
 
-            mplhep.histplot(H_AS,  histtype="step", linewidth=1.4, linestyle="--", label="Data sAS")
-            mplhep.histplot(H_A0,  histtype="step", linewidth=1.4, linestyle="--", label="Data sA0")
-            mplhep.histplot(H_App, histtype="step", linewidth=1.4, linestyle="--", label="Data sApp")
-            mplhep.histplot(H_Aq,  histtype="step", linewidth=1.4, linestyle="--", label="Data sAq")
+            mplhep.histplot(H_AS,  histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_AS")
+            mplhep.histplot(H_A0,  histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_A0")
+            mplhep.histplot(H_App, histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_App")
+            mplhep.histplot(H_Aq,  histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_Aq")
 
             data_total = wSig_AS + wSig_A0 + wSig_App + wSig_Aq
             H_tot = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
@@ -774,7 +846,20 @@ while i < ntoys:
             )
             Hw.fill(datatoy[vkey], weight=weights)
 
-            mplhep.histplot(Hw, histtype='errorbar', label='Signal sWeighted', xerr=True, yerr=True, marker='.')
+            mplhep.histplot(
+                Hw,
+                histtype="errorbar",
+                label="Signal sWeighted",
+                xerr=True,
+                yerr=True,
+                marker="o",
+                markersize=8,
+                elinewidth=1.5,
+                capsize=2,
+                color="tab:green",
+                zorder=100,
+            )
+
 
             # ---------- Reference overlay (from args.ref_h5) ----------
             edges = H.axes[0].edges
@@ -822,7 +907,12 @@ while i < ntoys:
 
     # Save the sWeighted data
     datas = data.to_pandas()
-    datas["wSig"] = datatoy[args.weight_branch].to_numpy(dtype=float)
+
+    # Always save the per-event weights we actually used in the fit:
+    # - if you loaded a real weight branch, `weights` is that branch
+    # - otherwise it's unit weights
+    datas["wSig"] = np.asarray(weights, dtype=float)
+
     datas['wS'] = sAS
     datas['wApp'] = sApp
     datas['wA0'] = sA0
@@ -837,7 +927,7 @@ while i < ntoys:
 
 
 # Plot the pull distributions if this was a toy study
-if args.toy:
+if DO_PULLS:
     mu = zfit.Parameter("mu", 0, -500, 500)
     sig = zfit.Parameter("sig", 1, 0, 100)
     x = zfit.Space('x', (-500, 500))
