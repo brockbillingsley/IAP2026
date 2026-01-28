@@ -11,6 +11,7 @@ import mypdfs  # Custom pdfs
 import angularfunctions as af  # Angular functions
 import h5py
 import os
+# from hepstats.splot import compute_sweights  # For sWeights computation
 
 # Makes nice default plots
 import mplhep
@@ -21,6 +22,44 @@ zfit.settings.set_seed(0)
 zfit.settings.set_verbosity(10)
 
 import pandas as pd
+
+def eval_pdf(model, x, params=None, allow_extended=False):
+    """Compute pdf of model at a given point x and for given parameters values"""
+
+    if params is None:
+        params = {}
+
+    def pdf(model, x):
+        ret = model.ext_pdf(x) if model.is_extended and allow_extended else model.pdf(x)
+
+        return np.array(ret)
+
+    for param in model.get_params():
+        if param in params:
+            value = params[param]["value"]
+            param.set_value(value)
+    return pdf(model, x)
+
+
+def compute_sweights(model, x, weights=None):
+    if weights is None:
+        weights = np.ones(len(x))
+
+    models = model.get_models()
+    yields = [m.get_yield() for m in models]
+
+    # p = np.vstack([np.array(m) for m in models]).T
+    # Nx = np.array(model.ext_pdf(data))*weights
+    p = np.vstack([eval_pdf(m, x)*weights for m in models]).T
+    Nx = eval_pdf(model, x, allow_extended=True)*weights
+    pN = p / Nx[:, None]
+
+    Vinv = (pN).T.dot(pN)
+    V = np.linalg.inv(Vinv)
+
+    sweights = p.dot(V) / Nx[:, None]
+
+    return {y: sweights[:, i] for i, y in enumerate(yields)}
 
 def _pick_col(df, candidates, label):
     """Return first existing column name from candidates."""
@@ -531,6 +570,35 @@ while i < ntoys:
     print(result)
     result.update_params()
 
+    # --- Build per-event component fractions from angular model ---
+    xdata = data  # zfit.Data with cosh/cosl and event weights already attached
+
+    # component "extended contributions": Nk * pdf_k(x)
+    t_AS  = eval_pdf(pdfs[N_AS],  xdata) * float(N_AS.value())
+    t_A0  = eval_pdf(pdfs[N_A0],  xdata) * float(N_A0.value())
+    t_App = eval_pdf(pdfs[N_App], xdata) * float(N_App.value())
+    t_Aq  = eval_pdf(pdfs[N_Aq],  xdata) * float(N_Aq.value())
+
+    t_sum = t_AS + t_A0 + t_App + t_Aq
+    t_sum_safe = np.where(t_sum > 0, t_sum, 1.0)
+
+    f_AS  = t_AS  / t_sum_safe
+    f_A0  = t_A0  / t_sum_safe
+    f_App = t_App / t_sum_safe
+    f_Aq  = t_Aq  / t_sum_safe
+
+    # --- Partition the mass-fit signal sWeights (args.weight_branch) ---
+    wSig_mass = weights  # from ROOT branch
+
+    wSig_AS  = wSig_mass * f_AS
+    wSig_A0  = wSig_mass * f_A0
+    wSig_App = wSig_mass * f_App
+    wSig_Aq  = wSig_mass * f_Aq
+
+    # event-by-event sanity:
+    print("[check] mean(|sum - wSig|) =",
+        float(np.mean(np.abs((wSig_AS+wSig_A0+wSig_App+wSig_Aq) - wSig_mass))))
+
     # Check that the result is valid
     covmat = result.covariance()
     posdef = np.all(np.linalg.eigvals(covmat) > 0)
@@ -578,6 +646,27 @@ while i < ntoys:
     with open(outname, 'w') as yaml_file:
         yaml.dump(paramdict, yaml_file, default_flow_style=False)
 
+# Compute sWeights
+    try:
+        sweights = compute_sweights(pdfsweights, data)
+    except Exception as e:
+        print(e)
+        print("Problem with massfit sweights.")
+        continue
+
+    # Sanity check
+    diff = Nsig.value()-N_A0.value()-N_App.value()-N_Aq.value()-N_AS.value()
+    assert (np.isclose(diff, 0, atol=1e-2))
+
+    sApp, sA0, sAS, sAq = sweights[N_App], sweights[N_A0], sweights[N_AS], sweights[N_Aq]
+
+    # Print the integrals after computing sWeights
+    print("[check] sums:",
+        "sum(sAS)", float(np.sum(sAS)), "N_AS", float(N_AS.value()),
+        "sum(sA0)", float(np.sum(sA0)), "N_A0", float(N_A0.value()),
+        "sum(sApp)", float(np.sum(sApp)), "N_App", float(N_App.value()),
+        "sum(sAq)", float(np.sum(sAq)), "N_Aq", float(N_Aq.value()))
+    print("[check] total sum sweights", float(np.sum(sAS+sA0+sApp+sAq)), "Nsig", float(Nsig.value()))
 
     # Save the pulls for toys
     if args.toy:
@@ -655,6 +744,28 @@ while i < ntoys:
                 H.fill(xplot, weight=wSig_plot)
             mplhep.histplot(H, color='black', histtype='errorbar', label='Toy data', xerr=True, yerr=True, marker='.', zorder=20)
 
+            # component histograms from sweights
+            H_AS = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_A0 = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_App = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_Aq = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+
+            vals = datatoy[vkey].to_numpy(dtype=float)
+
+            H_AS.fill(vals, weight=wSig_AS)
+            H_A0.fill(vals, weight=wSig_A0)
+            H_App.fill(vals, weight=wSig_App)
+            H_Aq.fill(vals, weight=wSig_Aq)
+
+            mplhep.histplot(H_AS,  histtype="step", linewidth=1.4, linestyle="--", label="Data sAS")
+            mplhep.histplot(H_A0,  histtype="step", linewidth=1.4, linestyle="--", label="Data sA0")
+            mplhep.histplot(H_App, histtype="step", linewidth=1.4, linestyle="--", label="Data sApp")
+            mplhep.histplot(H_Aq,  histtype="step", linewidth=1.4, linestyle="--", label="Data sAq")
+
+            data_total = wSig_AS + wSig_A0 + wSig_App + wSig_Aq
+            H_tot = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_tot.fill(vals, weight=data_total)
+            mplhep.histplot(H_tot, histtype="step", linewidth=2.0, label="Data TOTAL (sAS+sA0+sApp+sAq)")
 
             # Weighted histogram using *signal* mass sWeights only
             Hw = hist.Hist(
@@ -712,6 +823,10 @@ while i < ntoys:
     # Save the sWeighted data
     datas = data.to_pandas()
     datas["wSig"] = datatoy[args.weight_branch].to_numpy(dtype=float)
+    datas['wS'] = sAS
+    datas['wApp'] = sApp
+    datas['wA0'] = sA0
+    datas['wAq'] = sAq
 
     datas['mKpi'] = datatoy['mKpi'].values
     datas['q2'] = datatoy['q2'].values
