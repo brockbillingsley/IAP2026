@@ -803,49 +803,82 @@ while i < ntoys:
             plt.close()
 
 
-        # Also make weighted plots
-        for vkey, l, u in zip(["mKpi", "q2"], [r"$m(K\pi)$", r"$q^2$"], [r"GeV$/c^2$", r"GeV$^2/c^4$"]):
-            mi, ma = datatoy[vkey].min(), datatoy[vkey].max()
+        # Also make weighted plots (make 2 plots per variable: totals-only + components-only)
+        for vkey, l, u in zip(["mKpi", "q2"],
+                            [r"$m(K\pi)$", r"$q^2$"],
+                            [r"GeV$/c^2$", r"GeV$^2/c^4$"]):
+
+            mi, ma = float(datatoy[vkey].min()), float(datatoy[vkey].max())
             dist = ma - mi
-            H = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False))
-            wSig_plot = datatoy["wSig"].to_numpy(dtype=float) if "wSig" in datatoy.columns else None
-            xplot = datatoy[vkey].to_numpy()
-            if wSig_plot is None:
-                H.fill(xplot)
-            else:
-                H.fill(xplot, weight=wSig_plot)
-            mplhep.histplot(H, color='black', histtype='errorbar', label='Toy data', xerr=True, yerr=True, marker='.', zorder=20)
 
-            # component histograms from sweights
-            H_AS = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
-            H_A0 = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
-            H_App = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
-            H_Aq = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
-
+            # Base "toy/raw" histogram (unweighted)
+            H_raw = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False))
             vals = datatoy[vkey].to_numpy(dtype=float)
+            H_raw.fill(vals)
 
-            H_AS.fill(vals, weight=wSig_AS)
-            H_A0.fill(vals, weight=wSig_A0)
-            H_App.fill(vals, weight=wSig_App)
-            H_Aq.fill(vals, weight=wSig_Aq)
-
-            mplhep.histplot(H_AS,  histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_AS")
-            mplhep.histplot(H_A0,  histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_A0")
-            mplhep.histplot(H_App, histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_App")
-            mplhep.histplot(H_Aq,  histtype="step", linewidth=1.4, linestyle="--", label="Partitioned: wSig×f_Aq")
-
-            data_total = wSig_AS + wSig_A0 + wSig_App + wSig_Aq
-            H_tot = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
-            H_tot.fill(vals, weight=data_total)
-            mplhep.histplot(H_tot, histtype="step", linewidth=2.0, label="Data TOTAL (sAS+sA0+sApp+sAq)")
-
-            # Weighted histogram using *signal* mass sWeights only
+            # Signal-sWeighted points (this should be your mass-fit signal sWeights OR unit weights)
             Hw = hist.Hist(
                 hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False),
                 storage=hist.storage.Weight()
             )
-            Hw.fill(datatoy[vkey], weight=weights)
+            Hw.fill(vals, weight=weights)
 
+            # Partitioned component histograms (these are wSig * f_component)
+            H_AS  = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_A0  = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_App = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_Aq  = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+
+            H_AS.fill(vals,  weight=wSig_AS)
+            H_A0.fill(vals,  weight=wSig_A0)
+            H_App.fill(vals, weight=wSig_App)
+            H_Aq.fill(vals,  weight=wSig_Aq)
+
+            # Totals from partitioning (should match weights bin-by-bin up to float noise)
+            data_total = wSig_AS + wSig_A0 + wSig_App + wSig_Aq
+            H_tot = hist.Hist(hist.axis.Regular(nbins, mi, ma, underflow=False, overflow=False), storage=hist.storage.Weight())
+            H_tot.fill(vals, weight=data_total)
+
+            # ---------- Reference overlay (from args.ref_h5) ----------
+            edges = Hw.axes[0].edges
+            centers = 0.5 * (edges[:-1] + edges[1:])
+
+            ref_x = ref_vals[vkey]  # vkey is "mKpi" or "q2"
+            ref_S  = _weighted_hist(ref_x, ref_vals["wS"],  edges)
+            ref_A0 = _weighted_hist(ref_x, ref_vals["wA0"], edges)
+            ref_A1 = _weighted_hist(ref_x, ref_vals["wA1"], edges)
+
+            target_total = float(np.sum(Hw.values()))  # total "signal" yield in this plot
+            ref_total = float(np.sum(ref_S + ref_A0 + ref_A1))
+            ref_scale = (target_total / ref_total) if ref_total > 0 else 1.0
+
+            ref_S  = ref_S  * ref_scale
+            ref_A0 = ref_A0 * ref_scale
+            ref_A1 = ref_A1 * ref_scale
+            ref_sum = ref_S + ref_A0 + ref_A1
+
+            print("[info] ref_scale =", ref_scale,
+                "target_total =", target_total,
+                "ref_total(before) =", ref_total)
+
+            # ===========================
+            # PLOT 1: TOTALS ONLY
+            # ===========================
+            plt.figure()
+
+            # Toy data (raw, unweighted) in black
+            mplhep.histplot(
+                H_raw,
+                color="black",
+                histtype="errorbar",
+                label="Toy data (raw)",
+                xerr=True,
+                yerr=True,
+                marker=".",
+                zorder=20,
+            )
+
+            # Signal sWeighted points in green
             mplhep.histplot(
                 Hw,
                 histtype="errorbar",
@@ -853,55 +886,64 @@ while i < ntoys:
                 xerr=True,
                 yerr=True,
                 marker="o",
-                markersize=8,
-                elinewidth=1.5,
+                markersize=7,
+                elinewidth=1.4,
                 capsize=2,
                 color="tab:green",
-                zorder=100,
+                zorder=200,
             )
 
+            # Data total (partition sum) as a blue step
+            mplhep.histplot(
+                H_tot,
+                histtype="step",
+                linewidth=2.0,
+                label="Data TOTAL (partition sum)",
+            )
 
-            # ---------- Reference overlay (from args.ref_h5) ----------
-            edges = H.axes[0].edges
-            centers = 0.5 * (edges[:-1] + edges[1:])
+            # Reference total as orange dash-dot step
+            plt.step(
+                centers,
+                ref_sum,
+                where="mid",
+                linestyle="-.",
+                linewidth=1.8,
+                label="Ref TOTAL (scaled)",
+            )
 
-            ref_x = ref_vals[vkey]  # vkey is "mKpi" or "q2"
-
-            # Reference component histograms in COUNTS per bin (sum of weights in each bin)
-            ref_S  = _weighted_hist(ref_x, ref_vals["wS"],  edges)
-            ref_A0 = _weighted_hist(ref_x, ref_vals["wA0"], edges)
-            ref_A1 = _weighted_hist(ref_x, ref_vals["wA1"], edges)
-
-            # Scale reference so that TOTAL ref yield matches TOTAL data yield in Hw
-            target_total = float(np.sum(Hw.values()))  # total sum of weights in data hist
-            ref_total = float(np.sum(ref_S + ref_A0 + ref_A1))
-
-            ref_scale = (target_total / ref_total) if ref_total > 0 else 1.0
-
-            ref_S  = ref_S  * ref_scale
-            ref_A0 = ref_A0 * ref_scale
-            ref_A1 = ref_A1 * ref_scale
-
-            ref_sum = ref_S + ref_A0 + ref_A1
-            plt.step(centers, ref_sum, where="mid", linestyle="-.", linewidth=1.8, label="Ref TOTAL (scaled)")
-
-            print("[info] ref_scale =", ref_scale,
-                "target_total =", target_total,
-                "ref_total(before) =", ref_total)
-
-            # Draw as dashed step lines (counts/bin)
-            plt.step(centers, ref_S,  where="mid", linestyle="--", linewidth=1.6, label="Ref S (scaled)")
-            plt.step(centers, ref_A0, where="mid", linestyle="--", linewidth=1.6, label="Ref A0 (scaled)")
-            plt.step(centers, ref_A1, where="mid", linestyle="--", linewidth=1.6, label="Ref A1/App (scaled)")
-            # ---------------------------------------------------------
-
-
-            plt.legend(handletextpad=0.1, fontsize=24)
-            plt.axhline(0, color='black', linewidth=1)
+            plt.legend(handletextpad=0.1, fontsize=22)
+            plt.axhline(0, color="black", linewidth=1)
             plt.xlim(mi, ma)
             plt.xlabel(l + f" [{u}]", ha="right", x=1)
             plt.ylabel(r"$\sum$ weights / bin", ha="right", y=1)
-            plt.savefig(f"plots/{args.polynomial}/{name}/{i}_{vkey}_weighted.png", dpi=200)
+            plt.savefig(f"plots/{args.polynomial}/{name}/{i}_{vkey}_totals.png", dpi=200)
+            plt.close()
+
+            # ===========================
+            # PLOT 2: COMPONENTS ONLY
+            # ===========================
+            plt.figure()
+
+            # Partitioned components (data-side)
+            mplhep.histplot(H_AS,  histtype="step", linewidth=1.6, linestyle="--", label="Partitioned: wSig×f_AS")
+            mplhep.histplot(H_A0,  histtype="step", linewidth=1.6, linestyle="--", label="Partitioned: wSig×f_A0")
+            mplhep.histplot(H_App, histtype="step", linewidth=1.6, linestyle="--", label="Partitioned: wSig×f_App")
+            mplhep.histplot(H_Aq,  histtype="step", linewidth=1.6, linestyle="--", label="Partitioned: wSig×f_Aq")
+
+            # Reference components (scaled)
+            plt.step(centers, ref_S,  where="mid", linestyle=":",  linewidth=1.6, label="Ref S (scaled)")
+            plt.step(centers, ref_A0, where="mid", linestyle=":",  linewidth=1.6, label="Ref A0 (scaled)")
+            plt.step(centers, ref_A1, where="mid", linestyle=":",  linewidth=1.6, label="Ref A1/App (scaled)")
+
+            # Reference total lightly for context
+            plt.step(centers, ref_sum, where="mid", linestyle="-.", linewidth=1.4, alpha=0.6, label="Ref TOTAL (scaled)")
+
+            plt.legend(handletextpad=0.1, fontsize=22)
+            plt.axhline(0, color="black", linewidth=1)
+            plt.xlim(mi, ma)
+            plt.xlabel(l + f" [{u}]", ha="right", x=1)
+            plt.ylabel(r"$\sum$ weights / bin", ha="right", y=1)
+            plt.savefig(f"plots/{args.polynomial}/{name}/{i}_{vkey}_components.png", dpi=200)
             plt.close()
 
 
